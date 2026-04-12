@@ -55,6 +55,92 @@ describe("updateMatrixAccountConfig", () => {
     expect(updated.channels?.["matrix"]?.accounts?.default?.userId).toBeUndefined();
   });
 
+  it("preserves SecretRef auth inputs when updating config", () => {
+    const updated = updateMatrixAccountConfig({} as CoreConfig, "default", {
+      accessToken: { source: "env", provider: "default", id: "MATRIX_ACCESS_TOKEN" },
+      password: { source: "env", provider: "default", id: "MATRIX_PASSWORD" },
+    });
+
+    expect(updated.channels?.matrix?.accessToken).toEqual({
+      source: "env",
+      provider: "default",
+      id: "MATRIX_ACCESS_TOKEN",
+    });
+    expect(updated.channels?.matrix?.password).toEqual({
+      source: "env",
+      provider: "default",
+      id: "MATRIX_PASSWORD",
+    });
+  });
+
+  it("stores and clears Matrix allowBots, allowPrivateNetwork, and proxy settings", () => {
+    const cfg = {
+      channels: {
+        matrix: {
+          accounts: {
+            default: {
+              allowBots: true,
+              network: {
+                dangerouslyAllowPrivateNetwork: true,
+              },
+              proxy: "http://127.0.0.1:7890",
+            },
+          },
+        },
+      },
+    } as CoreConfig;
+
+    const updated = updateMatrixAccountConfig(cfg, "default", {
+      allowBots: "mentions",
+      allowPrivateNetwork: null,
+      proxy: null,
+    });
+
+    expect(updated.channels?.["matrix"]?.accounts?.default).toMatchObject({
+      allowBots: "mentions",
+    });
+    expect(updated.channels?.["matrix"]?.accounts?.default?.network).toBeUndefined();
+    expect(updated.channels?.["matrix"]?.accounts?.default?.proxy).toBeUndefined();
+  });
+
+  it("stores and clears Matrix invite auto-join settings", () => {
+    const cfg = {
+      channels: {
+        matrix: {
+          accounts: {
+            default: {
+              autoJoin: "allowlist",
+              autoJoinAllowlist: ["#ops:example.org"],
+            },
+          },
+        },
+      },
+    } as CoreConfig;
+
+    const allowlistUpdated = updateMatrixAccountConfig(cfg, "default", {
+      autoJoin: "allowlist",
+      autoJoinAllowlist: ["!ops-room:example.org", "#ops:example.org"],
+    });
+    expect(allowlistUpdated.channels?.matrix?.accounts?.default).toMatchObject({
+      autoJoin: "allowlist",
+      autoJoinAllowlist: ["!ops-room:example.org", "#ops:example.org"],
+    });
+
+    const offUpdated = updateMatrixAccountConfig(cfg, "default", {
+      autoJoin: "off",
+      autoJoinAllowlist: null,
+    });
+    expect(offUpdated.channels?.matrix?.accounts?.default?.autoJoin).toBe("off");
+    expect(offUpdated.channels?.matrix?.accounts?.default?.autoJoinAllowlist).toBeUndefined();
+
+    const alwaysUpdated = updateMatrixAccountConfig(cfg, "default", {
+      autoJoin: "always",
+      autoJoinAllowlist: null,
+    });
+    expect(alwaysUpdated.channels?.matrix?.accounts?.default?.autoJoin).toBe("always");
+    expect(alwaysUpdated.channels?.matrix?.accounts?.default?.autoJoinAllowlist).toBeUndefined();
+  });
+
   it("normalizes account id and defaults account enabled=true", () => {
     const updated = updateMatrixAccountConfig({} as CoreConfig, "Main Bot", {
       name: "Main Bot",
@@ -76,7 +162,7 @@ describe("updateMatrixAccountConfig", () => {
             policy: "pairing",
           },
           groups: {
-            "!default:example.org": { allow: true },
+            "!default:example.org": { enabled: true },
           },
           accounts: {
             ops: {
@@ -99,14 +185,14 @@ describe("updateMatrixAccountConfig", () => {
       },
       groupPolicy: "allowlist",
       groups: {
-        "!ops-room:example.org": { allow: true },
+        "!ops-room:example.org": { enabled: true },
       },
       rooms: null,
     });
 
     expect(updated.channels?.["matrix"]?.dm?.policy).toBe("pairing");
     expect(updated.channels?.["matrix"]?.groups).toEqual({
-      "!default:example.org": { allow: true },
+      "!default:example.org": { enabled: true },
     });
     expect(updated.channels?.["matrix"]?.accounts?.ops).toMatchObject({
       dm: {
@@ -116,7 +202,7 @@ describe("updateMatrixAccountConfig", () => {
       },
       groupPolicy: "allowlist",
       groups: {
-        "!ops-room:example.org": { allow: true },
+        "!ops-room:example.org": { enabled: true },
       },
     });
     expect(updated.channels?.["matrix"]?.accounts?.ops?.rooms).toBeUndefined();

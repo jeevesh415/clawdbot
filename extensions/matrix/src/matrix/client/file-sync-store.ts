@@ -1,14 +1,20 @@
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
+import path from "node:path";
 import {
+  Category,
   MemoryStore,
   SyncAccumulator,
   type ISyncData,
+  type IRooms,
   type ISyncResponse,
   type IStoredClientOpts,
-} from "matrix-js-sdk";
-import { writeJsonFileAtomically } from "../../runtime-api.js";
+} from "matrix-js-sdk/lib/matrix.js";
+import { writeJsonFileAtomically } from "openclaw/plugin-sdk/json-store";
+import { isRecord } from "../../record-shared.js";
+import { createAsyncLock } from "../async-lock.js";
 import { LogService } from "../sdk/logger.js";
+import { claimCurrentTokenStorageState } from "./storage.js";
 
 const STORE_VERSION = 1;
 const PERSIST_DEBOUNCE_MS = 250;
@@ -20,25 +26,22 @@ type PersistedMatrixSyncStore = {
   cleanShutdown?: boolean;
 };
 
-function createAsyncLock() {
-  let lock: Promise<void> = Promise.resolve();
-  return async function withLock<T>(fn: () => Promise<T>): Promise<T> {
-    const previous = lock;
-    let release: (() => void) | undefined;
-    lock = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await fn();
-    } finally {
-      release?.();
-    }
+function normalizeRoomsData(value: unknown): IRooms | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return {
+    [Category.Join]: isRecord(value[Category.Join]) ? (value[Category.Join] as IRooms["join"]) : {},
+    [Category.Invite]: isRecord(value[Category.Invite])
+      ? (value[Category.Invite] as IRooms["invite"])
+      : {},
+    [Category.Leave]: isRecord(value[Category.Leave])
+      ? (value[Category.Leave] as IRooms["leave"])
+      : {},
+    [Category.Knock]: isRecord(value[Category.Knock])
+      ? (value[Category.Knock] as IRooms["knock"])
+      : {},
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function toPersistedSyncData(value: unknown): ISyncData | null {
@@ -46,26 +49,31 @@ function toPersistedSyncData(value: unknown): ISyncData | null {
     return null;
   }
   if (typeof value.nextBatch === "string" && value.nextBatch.trim()) {
-    if (!Array.isArray(value.accountData) || !isRecord(value.roomsData)) {
+    const roomsData = normalizeRoomsData(value.roomsData);
+    if (!Array.isArray(value.accountData) || !roomsData) {
       return null;
     }
     return {
       nextBatch: value.nextBatch,
       accountData: value.accountData,
-      roomsData: value.roomsData,
-    } as unknown as ISyncData;
+      roomsData,
+    };
   }
 
   // Older Matrix state files stored the raw /sync-shaped payload directly.
   if (typeof value.next_batch === "string" && value.next_batch.trim()) {
+    const roomsData = normalizeRoomsData(value.rooms);
+    if (!roomsData) {
+      return null;
+    }
     return {
       nextBatch: value.next_batch,
       accountData:
         isRecord(value.account_data) && Array.isArray(value.account_data.events)
           ? value.account_data.events
           : [],
-      roomsData: isRecord(value.rooms) ? value.rooms : {},
-    } as unknown as ISyncData;
+      roomsData,
+    };
   }
 
   return null;
@@ -263,12 +271,15 @@ export class FileBackedMatrixSyncStore extends MemoryStore {
     const payload: PersistedMatrixSyncStore = {
       version: STORE_VERSION,
       savedSync: this.savedSync ? cloneJson(this.savedSync) : null,
-      cleanShutdown: this.cleanShutdown === true,
+      cleanShutdown: this.cleanShutdown,
       ...(this.savedClientOptions ? { clientOptions: cloneJson(this.savedClientOptions) } : {}),
     };
     try {
       await this.persistLock(async () => {
         await writeJsonFileAtomically(this.storagePath, payload);
+        claimCurrentTokenStorageState({
+          rootDir: path.dirname(this.storagePath),
+        });
       });
     } catch (err) {
       this.dirty = true;

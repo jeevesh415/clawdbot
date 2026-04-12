@@ -1,4 +1,5 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/text-runtime";
 import { resolveMatrixAccountConfig } from "./matrix/accounts.js";
 import {
   bootstrapMatrixVerification,
@@ -80,10 +81,9 @@ function readRoomId(params: Record<string, unknown>, required = true): string {
 }
 
 function toSnakeCaseKey(key: string): string {
-  return key
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .toLowerCase();
+  return normalizeOptionalLowercaseString(
+    key.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2").replace(/([a-z0-9])([A-Z])/g, "$1_$2"),
+  )!;
 }
 
 function readRawParam(params: Record<string, unknown>, key: string): unknown {
@@ -93,6 +93,27 @@ function readRawParam(params: Record<string, unknown>, key: string): unknown {
   const snakeKey = toSnakeCaseKey(key);
   if (snakeKey !== key && Object.hasOwn(params, snakeKey)) {
     return params[snakeKey];
+  }
+  return undefined;
+}
+
+function readStringAliasParam(
+  params: Record<string, unknown>,
+  keys: string[],
+  options: { required?: boolean } = {},
+): string | undefined {
+  for (const key of keys) {
+    const raw = readRawParam(params, key);
+    if (typeof raw !== "string") {
+      continue;
+    }
+    const trimmed = raw.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  if (options.required) {
+    throw new Error(`${keys[0]} required`);
   }
   return undefined;
 }
@@ -169,7 +190,10 @@ export async function handleMatrixAction(
 
   if (pollActions.has(action)) {
     const roomId = readRoomId(params);
-    const pollId = readStringParam(params, "pollId", { required: true });
+    const pollId = readStringAliasParam(params, ["pollId", "messageId"], { required: true });
+    if (!pollId) {
+      throw new Error("pollId required");
+    }
     const optionId = readStringParam(params, "pollOptionId");
     const optionIndex = readNumberParam(params, "pollOptionIndex", { integer: true });
     const optionIds = [
@@ -195,7 +219,11 @@ export async function handleMatrixAction(
     switch (action) {
       case "sendMessage": {
         const to = readStringParam(params, "to", { required: true });
-        const mediaUrl = readStringParam(params, "mediaUrl");
+        const mediaUrl =
+          readStringParam(params, "mediaUrl", { trim: false }) ??
+          readStringParam(params, "media", { trim: false }) ??
+          readStringParam(params, "filePath", { trim: false }) ??
+          readStringParam(params, "path", { trim: false });
         const content = readStringParam(params, "content", {
           required: !mediaUrl,
           allowEmpty: true,
@@ -203,11 +231,18 @@ export async function handleMatrixAction(
         const replyToId =
           readStringParam(params, "replyToId") ?? readStringParam(params, "replyTo");
         const threadId = readStringParam(params, "threadId");
+        const audioAsVoice =
+          typeof readRawParam(params, "audioAsVoice") === "boolean"
+            ? (readRawParam(params, "audioAsVoice") as boolean)
+            : typeof readRawParam(params, "asVoice") === "boolean"
+              ? (readRawParam(params, "asVoice") as boolean)
+              : undefined;
         const result = await sendMatrixMessage(to, content, {
           mediaUrl: mediaUrl ?? undefined,
           mediaLocalRoots: opts.mediaLocalRoots,
           replyToId: replyToId ?? undefined,
           threadId: threadId ?? undefined,
+          audioAsVoice,
           ...clientOpts,
         });
         return jsonResult({ ok: true, result });
@@ -398,7 +433,7 @@ export async function handleMatrixAction(
     }
     if (action === "verificationStart") {
       const methodRaw = readStringParam(params, "method");
-      const method = methodRaw?.trim().toLowerCase();
+      const method = normalizeOptionalLowercaseString(methodRaw);
       if (method && method !== "sas") {
         throw new Error(
           "Matrix verificationStart only supports method=sas; use verificationGenerateQr/verificationScanQr for QR flows.",

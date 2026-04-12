@@ -7,8 +7,10 @@ import {
 import {
   buildSearchCacheKey,
   DEFAULT_SEARCH_COUNT,
+  getScopedCredentialValue,
   MAX_SEARCH_COUNT,
   isoToPerplexityDate,
+  mergeScopedSearchConfig,
   normalizeFreshness,
   normalizeToIsoDate,
   readCachedSearchPayload,
@@ -19,6 +21,7 @@ import {
   resolveSearchCount,
   resolveSearchTimeoutSeconds,
   resolveSiteName,
+  setScopedCredentialValue,
   setProviderWebSearchPluginConfigValue,
   throwWebSearchApiError,
   type SearchConfigRecord,
@@ -29,6 +32,10 @@ import {
   wrapWebContent,
   writeCachedSearchPayload,
 } from "openclaw/plugin-sdk/provider-web-search";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "openclaw/plugin-sdk/text-runtime";
 
 const DEFAULT_PERPLEXITY_BASE_URL = "https://openrouter.ai/api/v1";
 const PERPLEXITY_DIRECT_BASE_URL = "https://api.perplexity.ai";
@@ -82,7 +89,7 @@ function inferPerplexityBaseUrlFromApiKey(apiKey?: string): PerplexityBaseUrlHin
   if (!apiKey) {
     return undefined;
   }
-  const normalized = apiKey.toLowerCase();
+  const normalized = normalizeLowercaseStringOrEmpty(apiKey);
   if (PERPLEXITY_KEY_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
     return "direct";
   }
@@ -119,7 +126,7 @@ function resolvePerplexityBaseUrl(
   authSource: "config" | "perplexity_env" | "openrouter_env" | "none" = "none",
   configuredKey?: string,
 ): string {
-  const fromConfig = typeof perplexity?.baseUrl === "string" ? perplexity.baseUrl.trim() : "";
+  const fromConfig = normalizeOptionalString(perplexity?.baseUrl) ?? "";
   if (fromConfig) {
     return fromConfig;
   }
@@ -138,13 +145,15 @@ function resolvePerplexityBaseUrl(
 }
 
 function resolvePerplexityModel(perplexity?: PerplexityConfig): string {
-  const model = typeof perplexity?.model === "string" ? perplexity.model.trim() : "";
+  const model = normalizeOptionalString(perplexity?.model) ?? "";
   return model || DEFAULT_PERPLEXITY_MODEL;
 }
 
 function isDirectPerplexityBaseUrl(baseUrl: string): boolean {
   try {
-    return new URL(baseUrl.trim()).hostname.toLowerCase() === "api.perplexity.ai";
+    return (
+      normalizeLowercaseStringOrEmpty(new URL(baseUrl.trim()).hostname) === "api.perplexity.ai"
+    );
   } catch {
     return false;
   }
@@ -168,8 +177,7 @@ function resolvePerplexityTransport(perplexity?: PerplexityConfig): {
   const baseUrl = resolvePerplexityBaseUrl(perplexity, auth.source, auth.apiKey);
   const model = resolvePerplexityModel(perplexity);
   const hasLegacyOverride = Boolean(
-    (perplexity?.baseUrl && perplexity.baseUrl.trim()) ||
-    (perplexity?.model && perplexity.model.trim()),
+    normalizeOptionalString(perplexity?.baseUrl) || normalizeOptionalString(perplexity?.model),
   );
   return {
     ...auth,
@@ -181,8 +189,8 @@ function resolvePerplexityTransport(perplexity?: PerplexityConfig): {
 }
 
 function extractPerplexityCitations(data: PerplexitySearchResponse): string[] {
-  const topLevel = (data.citations ?? []).filter(
-    (url): url is string => typeof url === "string" && Boolean(url.trim()),
+  const topLevel = (data.citations ?? []).filter((url): url is string =>
+    Boolean(normalizeOptionalString(url)),
   );
   if (topLevel.length > 0) {
     return [...new Set(topLevel)];
@@ -199,8 +207,9 @@ function extractPerplexityCitations(data: PerplexitySearchResponse): string[] {
           : typeof annotation.url === "string"
             ? annotation.url
             : undefined;
-      if (url?.trim()) {
-        citations.push(url.trim());
+      const normalizedUrl = normalizeOptionalString(url);
+      if (normalizedUrl) {
+        citations.push(normalizedUrl);
       }
     }
   }
@@ -225,15 +234,30 @@ async function runPerplexitySearchApi(params: {
     query: params.query,
     max_results: params.count,
   };
-  if (params.country) body.country = params.country;
-  if (params.searchDomainFilter?.length) body.search_domain_filter = params.searchDomainFilter;
-  if (params.searchRecencyFilter) body.search_recency_filter = params.searchRecencyFilter;
-  if (params.searchLanguageFilter?.length)
+  if (params.country) {
+    body.country = params.country;
+  }
+  if (params.searchDomainFilter?.length) {
+    body.search_domain_filter = params.searchDomainFilter;
+  }
+  if (params.searchRecencyFilter) {
+    body.search_recency_filter = params.searchRecencyFilter;
+  }
+  if (params.searchLanguageFilter?.length) {
     body.search_language_filter = params.searchLanguageFilter;
-  if (params.searchAfterDate) body.search_after_date = params.searchAfterDate;
-  if (params.searchBeforeDate) body.search_before_date = params.searchBeforeDate;
-  if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
-  if (params.maxTokensPerPage !== undefined) body.max_tokens_per_page = params.maxTokensPerPage;
+  }
+  if (params.searchAfterDate) {
+    body.search_after_date = params.searchAfterDate;
+  }
+  if (params.searchBeforeDate) {
+    body.search_before_date = params.searchBeforeDate;
+  }
+  if (params.maxTokens !== undefined) {
+    body.max_tokens = params.maxTokens;
+  }
+  if (params.maxTokensPerPage !== undefined) {
+    body.max_tokens_per_page = params.maxTokensPerPage;
+  }
 
   return withTrustedWebSearchEndpoint(
     {
@@ -323,15 +347,19 @@ function resolveRuntimeTransport(params: {
     perplexity && typeof perplexity === "object" && !Array.isArray(perplexity)
       ? (perplexity as { baseUrl?: string; model?: string })
       : undefined;
-  const configuredBaseUrl = typeof scoped?.baseUrl === "string" ? scoped.baseUrl.trim() : "";
-  const configuredModel = typeof scoped?.model === "string" ? scoped.model.trim() : "";
+  const configuredBaseUrl = normalizeOptionalString(scoped?.baseUrl) ?? "";
+  const configuredModel = normalizeOptionalString(scoped?.model) ?? "";
   const baseUrl = (() => {
     if (configuredBaseUrl) {
       return configuredBaseUrl;
     }
     if (params.keySource === "env") {
-      if (params.fallbackEnvVar === "PERPLEXITY_API_KEY") return PERPLEXITY_DIRECT_BASE_URL;
-      if (params.fallbackEnvVar === "OPENROUTER_API_KEY") return DEFAULT_PERPLEXITY_BASE_URL;
+      if (params.fallbackEnvVar === "PERPLEXITY_API_KEY") {
+        return PERPLEXITY_DIRECT_BASE_URL;
+      }
+      if (params.fallbackEnvVar === "OPENROUTER_API_KEY") {
+        return DEFAULT_PERPLEXITY_BASE_URL;
+      }
     }
     if ((params.keySource === "config" || params.keySource === "secretRef") && params.resolvedKey) {
       return inferPerplexityBaseUrlFromApiKey(params.resolvedKey) === "openrouter"
@@ -429,7 +457,7 @@ function createPerplexityToolDefinition(
         };
       }
 
-      const params = args as Record<string, unknown>;
+      const params = args;
       const query = readStringParam(params, "query", { required: true });
       const count =
         readNumberParam(params, "count", { integer: true }) ??
@@ -619,7 +647,7 @@ function createPerplexityToolDefinition(
               },
               results: await runPerplexitySearchApi({
                 query,
-                apiKey: runtime.apiKey!,
+                apiKey: runtime.apiKey,
                 count: resolveSearchCount(count, DEFAULT_SEARCH_COUNT),
                 timeoutSeconds,
                 country: country ?? undefined,
@@ -650,7 +678,9 @@ export function createPerplexityWebSearchProvider(): WebSearchProviderPlugin {
   return {
     id: "perplexity",
     label: "Perplexity Search",
-    hint: "Structured results · domain/country/language/time filters",
+    hint: "Requires Perplexity API key or OpenRouter API key · structured results",
+    onboardingScopes: ["text-inference"],
+    credentialLabel: "Perplexity API key",
     envVars: ["PERPLEXITY_API_KEY", "OPENROUTER_API_KEY"],
     placeholder: "pplx-...",
     signupUrl: "https://www.perplexity.ai/settings/api",
@@ -658,20 +688,9 @@ export function createPerplexityWebSearchProvider(): WebSearchProviderPlugin {
     autoDetectOrder: 50,
     credentialPath: "plugins.entries.perplexity.config.webSearch.apiKey",
     inactiveSecretPaths: ["plugins.entries.perplexity.config.webSearch.apiKey"],
-    getCredentialValue: (searchConfig) => {
-      const perplexity = searchConfig?.perplexity;
-      return perplexity && typeof perplexity === "object" && !Array.isArray(perplexity)
-        ? (perplexity as Record<string, unknown>).apiKey
-        : undefined;
-    },
-    setCredentialValue: (searchConfigTarget, value) => {
-      const scoped = searchConfigTarget.perplexity;
-      if (!scoped || typeof scoped !== "object" || Array.isArray(scoped)) {
-        searchConfigTarget.perplexity = { apiKey: value };
-        return;
-      }
-      (scoped as Record<string, unknown>).apiKey = value;
-    },
+    getCredentialValue: (searchConfig) => getScopedCredentialValue(searchConfig, "perplexity"),
+    setCredentialValue: (searchConfigTarget, value) =>
+      setScopedCredentialValue(searchConfigTarget, "perplexity", value),
     getConfiguredCredentialValue: (config) =>
       resolveProviderWebSearchPluginConfig(config, "perplexity")?.apiKey,
     setConfiguredCredentialValue: (configTarget, value) => {
@@ -679,17 +698,11 @@ export function createPerplexityWebSearchProvider(): WebSearchProviderPlugin {
     },
     resolveRuntimeMetadata: (ctx) => ({
       perplexityTransport: resolveRuntimeTransport({
-        searchConfig: {
-          ...(ctx.searchConfig as SearchConfigRecord | undefined),
-          perplexity: {
-            ...((ctx.searchConfig as SearchConfigRecord | undefined)?.perplexity as
-              | Record<string, unknown>
-              | undefined),
-            ...(resolveProviderWebSearchPluginConfig(ctx.config, "perplexity") as
-              | Record<string, unknown>
-              | undefined),
-          },
-        },
+        searchConfig: mergeScopedSearchConfig(
+          ctx.searchConfig,
+          "perplexity",
+          resolveProviderWebSearchPluginConfig(ctx.config, "perplexity"),
+        ),
         resolvedKey: ctx.resolvedCredential?.value,
         keySource: ctx.resolvedCredential?.source ?? "missing",
         fallbackEnvVar: ctx.resolvedCredential?.fallbackEnvVar,
@@ -697,21 +710,12 @@ export function createPerplexityWebSearchProvider(): WebSearchProviderPlugin {
     }),
     createTool: (ctx) =>
       createPerplexityToolDefinition(
-        (() => {
-          const searchConfig = ctx.searchConfig as SearchConfigRecord | undefined;
-          const pluginConfig = resolveProviderWebSearchPluginConfig(ctx.config, "perplexity");
-          if (!pluginConfig) {
-            return searchConfig;
-          }
-          return {
-            ...(searchConfig ?? {}),
-            perplexity: {
-              ...resolvePerplexityConfig(searchConfig),
-              ...pluginConfig,
-            },
-          } as SearchConfigRecord;
-        })(),
-        ctx.runtimeMetadata?.perplexityTransport as PerplexityTransport | undefined,
+        mergeScopedSearchConfig(
+          ctx.searchConfig,
+          "perplexity",
+          resolveProviderWebSearchPluginConfig(ctx.config, "perplexity"),
+        ),
+        ctx.runtimeMetadata?.perplexityTransport,
       ),
   };
 }
