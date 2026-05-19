@@ -1,33 +1,13 @@
+import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
 import type { BuildTelegramMessageContextParams, TelegramMediaRef } from "./bot-message-context.js";
 
 export const baseTelegramMessageContextConfig = {
   agents: { defaults: { model: "anthropic/claude-opus-4-5", workspace: "/tmp/openclaw" } },
-  channels: { telegram: {} },
+  channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
   messages: { groupChat: { mentionPatterns: [] } },
 } as never;
 
 type TelegramTestSessionRuntime = NonNullable<BuildTelegramMessageContextParams["sessionRuntime"]>;
-const finalizeInboundContextForTest = ((ctx) => {
-  const next = ctx as Record<string, unknown>;
-  const body = typeof next.Body === "string" ? next.Body : "";
-  next.Body = body;
-  next.BodyForAgent =
-    typeof next.BodyForAgent === "string"
-      ? next.BodyForAgent
-      : typeof next.RawBody === "string"
-        ? next.RawBody
-        : body;
-  next.BodyForCommands =
-    typeof next.BodyForCommands === "string"
-      ? next.BodyForCommands
-      : typeof next.CommandBody === "string"
-        ? next.CommandBody
-        : typeof next.RawBody === "string"
-          ? next.RawBody
-          : body;
-  next.CommandAuthorized = Boolean(next.CommandAuthorized);
-  return next;
-}) as NonNullable<TelegramTestSessionRuntime["finalizeInboundContext"]>;
 
 type BuildTelegramMessageContextForTestParams = {
   message: Record<string, unknown>;
@@ -35,6 +15,10 @@ type BuildTelegramMessageContextForTestParams = {
   options?: BuildTelegramMessageContextParams["options"];
   cfg?: Record<string, unknown>;
   accountId?: string;
+  historyLimit?: number;
+  groupHistories?: Map<string, import("openclaw/plugin-sdk/reply-history").HistoryEntry[]>;
+  ackReactionScope?: BuildTelegramMessageContextParams["ackReactionScope"];
+  botApi?: Record<string, unknown>;
   runtime?: BuildTelegramMessageContextParams["runtime"];
   sessionRuntime?: BuildTelegramMessageContextParams["sessionRuntime"] | null;
   resolveGroupActivation?: BuildTelegramMessageContextParams["resolveGroupActivation"];
@@ -43,7 +27,7 @@ type BuildTelegramMessageContextForTestParams = {
 };
 
 const telegramMessageContextSessionRuntimeForTest = {
-  finalizeInboundContext: finalizeInboundContextForTest,
+  buildChannelInboundEventContext,
   readSessionUpdatedAt: () => undefined,
   recordInboundSession: async () => undefined,
   resolveInboundLastRouteSessionKey: ({ route, sessionKey }) =>
@@ -84,6 +68,7 @@ export async function buildTelegramMessageContextForTest(
       api: {
         sendChatAction: vi.fn(),
         setMessageReaction: vi.fn(),
+        ...params.botApi,
       },
     } as never,
     cfg: (params.cfg ?? baseTelegramMessageContextConfig) as never,
@@ -94,12 +79,12 @@ export async function buildTelegramMessageContextForTest(
     },
     sessionRuntime,
     account: { accountId: params.accountId ?? "default" } as never,
-    historyLimit: 0,
-    groupHistories: new Map(),
+    historyLimit: params.historyLimit ?? 0,
+    groupHistories: params.groupHistories ?? new Map(),
     dmPolicy: "open",
-    allowFrom: [],
+    allowFrom: ["*"],
     groupAllowFrom: [],
-    ackReactionScope: "off",
+    ackReactionScope: params.ackReactionScope ?? "off",
     logger: { info: vi.fn() },
     resolveGroupActivation: params.resolveGroupActivation ?? (() => undefined),
     resolveGroupRequireMention: params.resolveGroupRequireMention ?? (() => false),

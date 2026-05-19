@@ -2,7 +2,7 @@ import type {
   ProviderAuthContext,
   ProviderAuthMethodNonInteractiveContext,
 } from "openclaw/plugin-sdk/plugin-entry";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { readClaudeCliCredentialsForSetup, readClaudeCliCredentialsForSetupNonInteractive } =
   vi.hoisted(() => ({
@@ -20,10 +20,19 @@ vi.mock("./cli-auth-seam.js", async (importActual) => {
 });
 
 const { buildAnthropicCliMigrationResult, hasClaudeCliAuth } = await import("./cli-migration.js");
-const { registerSingleProviderPlugin } =
-  await import("../../test/helpers/plugins/plugin-registration.js");
-const { createTestWizardPrompter } = await import("../../test/helpers/plugins/setup-wizard.js");
+const { createTestWizardPrompter, registerSingleProviderPlugin } =
+  await import("openclaw/plugin-sdk/plugin-test-runtime");
 const { default: anthropicPlugin } = await import("./index.js");
+
+beforeEach(() => {
+  readClaudeCliCredentialsForSetup.mockReset();
+  readClaudeCliCredentialsForSetupNonInteractive.mockReset();
+});
+
+afterAll(() => {
+  vi.doUnmock("./cli-auth-seam.js");
+  vi.resetModules();
+});
 
 async function resolveAnthropicCliAuthMethod() {
   const provider = await registerSingleProviderPlugin(anthropicPlugin);
@@ -96,16 +105,16 @@ describe("anthropic cli migration", () => {
     expect(readClaudeCliCredentialsForSetupNonInteractive).toHaveBeenCalledTimes(1);
   });
 
-  it("rewrites anthropic defaults to claude-cli defaults", () => {
+  it("keeps anthropic defaults and selects the claude-cli runtime", () => {
     const result = buildAnthropicCliMigrationResult({
       agents: {
         defaults: {
           model: {
-            primary: "anthropic/claude-sonnet-4-6",
+            primary: "anthropic/claude-opus-4-7",
             fallbacks: ["anthropic/claude-opus-4-6", "openai/gpt-5.2"],
           },
           models: {
-            "anthropic/claude-sonnet-4-6": { alias: "Sonnet" },
+            "anthropic/claude-opus-4-7": { alias: "Opus" },
             "anthropic/claude-opus-4-6": { alias: "Opus" },
             "openai/gpt-5.2": {},
           },
@@ -113,21 +122,29 @@ describe("anthropic cli migration", () => {
       },
     });
 
-    expect(result.profiles).toEqual([]);
-    expect(result.defaultModel).toBe("claude-cli/claude-sonnet-4-6");
+    expect(result.profiles).toStrictEqual([]);
+    expect(result.defaultModel).toBe("anthropic/claude-opus-4-7");
     expect(result.configPatch).toEqual({
       agents: {
         defaults: {
           model: {
-            primary: "claude-cli/claude-sonnet-4-6",
-            fallbacks: ["claude-cli/claude-opus-4-6", "openai/gpt-5.2"],
+            primary: "anthropic/claude-opus-4-7",
+            fallbacks: ["anthropic/claude-opus-4-6", "openai/gpt-5.2"],
           },
+          agentRuntime: { id: "claude-cli" },
           models: {
-            "claude-cli/claude-sonnet-4-6": { alias: "Sonnet" },
-            "claude-cli/claude-opus-4-6": { alias: "Opus" },
-            "claude-cli/claude-opus-4-5": {},
-            "claude-cli/claude-sonnet-4-5": {},
-            "claude-cli/claude-haiku-4-5": {},
+            "anthropic/claude-opus-4-7": {
+              alias: "Opus",
+              agentRuntime: { id: "claude-cli" },
+            },
+            "anthropic/claude-sonnet-4-6": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-opus-4-6": {
+              alias: "Opus",
+              agentRuntime: { id: "claude-cli" },
+            },
+            "anthropic/claude-opus-4-5": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-4-5": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-haiku-4-5": { agentRuntime: { id: "claude-cli" } },
             "openai/gpt-5.2": {},
           },
         },
@@ -147,17 +164,19 @@ describe("anthropic cli migration", () => {
       },
     });
 
-    expect(result.defaultModel).toBe("claude-cli/claude-sonnet-4-6");
+    expect(result.defaultModel).toBe("anthropic/claude-opus-4-7");
     expect(result.configPatch).toEqual({
       agents: {
         defaults: {
+          agentRuntime: { id: "claude-cli" },
           models: {
             "openai/gpt-5.2": {},
-            "claude-cli/claude-sonnet-4-6": {},
-            "claude-cli/claude-opus-4-6": {},
-            "claude-cli/claude-opus-4-5": {},
-            "claude-cli/claude-sonnet-4-5": {},
-            "claude-cli/claude-haiku-4-5": {},
+            "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-4-6": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-opus-4-6": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-opus-4-5": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-4-5": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-haiku-4-5": { agentRuntime: { id: "claude-cli" } },
           },
         },
       },
@@ -168,9 +187,9 @@ describe("anthropic cli migration", () => {
     const result = buildAnthropicCliMigrationResult({
       agents: {
         defaults: {
-          model: { primary: "claude-cli/claude-sonnet-4-6" },
+          model: { primary: "claude-cli/claude-opus-4-7" },
           models: {
-            "claude-cli/claude-sonnet-4-6": {},
+            "claude-cli/claude-opus-4-7": {},
           },
         },
       },
@@ -179,15 +198,55 @@ describe("anthropic cli migration", () => {
     expect(result.configPatch).toEqual({
       agents: {
         defaults: {
+          model: { primary: "anthropic/claude-opus-4-7" },
+          agentRuntime: { id: "claude-cli" },
           models: {
-            "claude-cli/claude-sonnet-4-6": {},
-            "claude-cli/claude-opus-4-6": {},
-            "claude-cli/claude-opus-4-5": {},
-            "claude-cli/claude-sonnet-4-5": {},
-            "claude-cli/claude-haiku-4-5": {},
+            "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-4-6": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-opus-4-6": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-opus-4-5": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-4-5": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-haiku-4-5": { agentRuntime: { id: "claude-cli" } },
           },
         },
       },
+    });
+  });
+
+  it("preserves explicit model runtime policy while filling missing Claude CLI policies", () => {
+    const result = buildAnthropicCliMigrationResult({
+      agents: {
+        defaults: {
+          model: {
+            primary: "anthropic/claude-opus-4-7",
+            fallbacks: ["anthropic/claude-sonnet-4-6"],
+          },
+          models: {
+            "anthropic/claude-opus-4-7": {
+              alias: "Opus",
+              agentRuntime: { id: "pi" },
+            },
+            "anthropic/claude-sonnet-4-6": {
+              alias: "Sonnet",
+              agentRuntime: { id: "auto" },
+            },
+          },
+        },
+      },
+    });
+
+    const defaults = result.configPatch?.agents?.defaults;
+    if (!defaults) {
+      throw new Error("Expected Claude CLI migration to return default agent config");
+    }
+
+    expect(defaults.models?.["anthropic/claude-opus-4-7"]).toEqual({
+      alias: "Opus",
+      agentRuntime: { id: "pi" },
+    });
+    expect(defaults.models?.["anthropic/claude-sonnet-4-6"]).toEqual({
+      alias: "Sonnet",
+      agentRuntime: { id: "claude-cli" },
     });
   });
 
@@ -217,11 +276,11 @@ describe("anthropic cli migration", () => {
       agents: {
         defaults: {
           model: {
-            primary: "anthropic/claude-sonnet-4-6",
+            primary: "anthropic/claude-opus-4-7",
             fallbacks: ["anthropic/claude-opus-4-6", "openai/gpt-5.2"],
           },
           models: {
-            "anthropic/claude-sonnet-4-6": { alias: "Sonnet" },
+            "anthropic/claude-opus-4-7": { alias: "Opus" },
             "anthropic/claude-opus-4-6": { alias: "Opus" },
             "openai/gpt-5.2": {},
           },
@@ -284,7 +343,7 @@ describe("anthropic cli migration", () => {
     ]);
   });
 
-  it("registered non-interactive cli auth rewrites anthropic fallbacks before setting the claude-cli default", async () => {
+  it("registered non-interactive cli auth keeps anthropic fallbacks and selects claude-cli runtime", async () => {
     readClaudeCliCredentialsForSetupNonInteractive.mockReturnValue({
       type: "oauth",
       provider: "anthropic",
@@ -297,11 +356,11 @@ describe("anthropic cli migration", () => {
       agents: {
         defaults: {
           model: {
-            primary: "anthropic/claude-sonnet-4-6",
+            primary: "anthropic/claude-opus-4-7",
             fallbacks: ["anthropic/claude-opus-4-6", "openai/gpt-5.2"],
           },
           models: {
-            "anthropic/claude-sonnet-4-6": { alias: "Sonnet" },
+            "anthropic/claude-opus-4-7": { alias: "Opus" },
             "anthropic/claude-opus-4-6": { alias: "Opus" },
             "openai/gpt-5.2": {},
           },
@@ -309,23 +368,28 @@ describe("anthropic cli migration", () => {
       },
     };
 
-    await expect(
-      method.runNonInteractive?.(createProviderAuthMethodNonInteractiveContext(config)),
-    ).resolves.toMatchObject({
-      agents: {
-        defaults: {
-          model: {
-            primary: "claude-cli/claude-sonnet-4-6",
-            fallbacks: ["claude-cli/claude-opus-4-6", "openai/gpt-5.2"],
-          },
-          models: {
-            "claude-cli/claude-sonnet-4-6": { alias: "Sonnet" },
-            "claude-cli/claude-opus-4-6": { alias: "Opus" },
-            "openai/gpt-5.2": {},
-          },
-        },
-      },
+    const result = await method.runNonInteractive?.(
+      createProviderAuthMethodNonInteractiveContext(config),
+    );
+    const defaults = result?.agents?.defaults as
+      | {
+          model?: { primary?: string; fallbacks?: string[] };
+          agentRuntime?: { id?: string };
+          models?: Record<string, unknown>;
+        }
+      | undefined;
+    expect(defaults?.model?.primary).toBe("anthropic/claude-opus-4-7");
+    expect(defaults?.model?.fallbacks).toEqual(["anthropic/claude-opus-4-6", "openai/gpt-5.2"]);
+    expect(defaults?.agentRuntime?.id).toBe("claude-cli");
+    expect(defaults?.models?.["anthropic/claude-opus-4-7"]).toEqual({
+      alias: "Opus",
+      agentRuntime: { id: "claude-cli" },
     });
+    expect(defaults?.models?.["anthropic/claude-opus-4-6"]).toEqual({
+      alias: "Opus",
+      agentRuntime: { id: "claude-cli" },
+    });
+    expect(defaults?.models?.["openai/gpt-5.2"]).toEqual({});
   });
 
   it("registered non-interactive cli auth reports missing local auth and exits cleanly", async () => {

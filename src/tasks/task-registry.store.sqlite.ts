@@ -1,6 +1,9 @@
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { configureSqliteWalMaintenance, type SqliteWalMaintenance } from "../infra/sqlite-wal.js";
+import { isRecord } from "../utils.js";
+import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { resolveTaskRegistryDir, resolveTaskRegistrySqlitePath } from "./task-registry.paths.js";
 import type { TaskRegistryStoreSnapshot } from "./task-registry.store.types.js";
@@ -60,6 +63,7 @@ type TaskRegistryDatabase = {
   db: DatabaseSync;
   path: string;
   statements: TaskRegistryStatements;
+  walMaintenance: SqliteWalMaintenance;
 };
 
 let cachedDatabase: TaskRegistryDatabase | null = null;
@@ -78,6 +82,7 @@ function serializeJson(value: unknown): string | null {
   return value == null ? null : JSON.stringify(value);
 }
 
+// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Persisted JSON columns are typed by the receiving field.
 function parseJsonValue<T>(raw: string | null): T | undefined {
   if (!raw?.trim()) {
     return undefined;
@@ -87,6 +92,22 @@ function parseJsonValue<T>(raw: string | null): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+function parseDeliveryContextJson(raw: string | null): DeliveryContext | undefined {
+  const parsed = parseJsonValue<unknown>(raw);
+  if (!isRecord(parsed)) {
+    return undefined;
+  }
+  return normalizeDeliveryContext({
+    channel: typeof parsed.channel === "string" ? parsed.channel : undefined,
+    to: typeof parsed.to === "string" ? parsed.to : undefined,
+    accountId: typeof parsed.accountId === "string" ? parsed.accountId : undefined,
+    threadId:
+      typeof parsed.threadId === "string" || typeof parsed.threadId === "number"
+        ? parsed.threadId
+        : undefined,
+  });
 }
 
 function rowToTaskRecord(row: TaskRegistryRow): TaskRecord {
@@ -127,7 +148,7 @@ function rowToTaskRecord(row: TaskRegistryRow): TaskRecord {
 }
 
 function rowToTaskDeliveryState(row: TaskDeliveryStateRow): TaskDeliveryState {
-  const requesterOrigin = parseJsonValue<DeliveryContext>(row.requester_origin_json);
+  const requesterOrigin = parseDeliveryContextJson(row.requester_origin_json);
   const lastNotifiedEventAt = normalizeNumber(row.last_notified_event_at);
   return {
     taskId: row.task_id,
@@ -440,13 +461,14 @@ function openTaskRegistryDatabase(): TaskRegistryDatabase {
     return cachedDatabase;
   }
   if (cachedDatabase) {
+    cachedDatabase.walMaintenance.close();
     cachedDatabase.db.close();
     cachedDatabase = null;
   }
   ensureTaskRegistryPermissions(pathname);
   const { DatabaseSync } = requireNodeSqlite();
   const db = new DatabaseSync(pathname);
-  db.exec(`PRAGMA journal_mode = WAL;`);
+  const walMaintenance = configureSqliteWalMaintenance(db);
   db.exec(`PRAGMA synchronous = NORMAL;`);
   db.exec(`PRAGMA busy_timeout = 5000;`);
   ensureSchema(db);
@@ -455,6 +477,7 @@ function openTaskRegistryDatabase(): TaskRegistryDatabase {
     db,
     path: pathname,
     statements: createStatements(db),
+    walMaintenance,
   };
   return cachedDatabase;
 }
@@ -541,6 +564,7 @@ export function closeTaskRegistrySqliteStore() {
   if (!cachedDatabase) {
     return;
   }
+  cachedDatabase.walMaintenance.close();
   cachedDatabase.db.close();
   cachedDatabase = null;
 }
